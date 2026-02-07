@@ -1,3 +1,6 @@
+from dataclasses import dataclass
+from typing import Any, List
+
 """
 //Input
 We are given:
@@ -39,14 +42,10 @@ We print blocks with:
 We print chain valid? True/False
 """
 
-def main():
-    # TODO: implement Blockchain and run demo
-    pass
 
-if __name__ == "__main__":
-    main()
-from dataclasses import dataclass
-from typing import Any, List
+# ============================================================
+# Commit #2: Block Data Structure
+# ============================================================
 
 @dataclass
 class Block:
@@ -63,12 +62,25 @@ class Block:
 
     nonce: int
     block_hash: str
+
+
+# ============================================================
+# Commit #3: Custom Hash (AuroHash-256) — NOT SHA-256
+# ============================================================
+
 def _rotl32(x: int, r: int) -> int:
+    """Rotate-left a 32-bit integer."""
     x &= 0xFFFFFFFF
     return ((x << r) | (x >> (32 - r))) & 0xFFFFFFFF
 
 
 def aurohash_256(data: bytes) -> str:
+    """
+    Custom 256-bit hash function for coursework.
+    - Input: bytes
+    - Output: 64 hex chars (256 bits)
+    NOTE: Not a standard crypto hash; used to satisfy 'no SHA-256' constraint.
+    """
     s = [
         0x243F6A88, 0x85A308D3, 0x13198A2E, 0x03707344,
         0xA4093822, 0x299F31D0, 0x082EFA98, 0xEC4E6C89
@@ -107,4 +119,40 @@ def aurohash_256(data: bytes) -> str:
         s[7] ^= _rotl32(s[6], 5)
 
     return "".join(f"{x:08x}" for x in s)
-print("hash('hello') =", aurohash_256(b"hello"))
+
+
+# ============================================================
+# Commit #4: Merkle Root for Transaction Integrity
+# ============================================================
+
+def merkle_root(transactions: List[Any]) -> str:
+    """
+    Builds a Merkle root for the transactions.
+    Any transaction change -> different leaf hash -> different merkle root.
+    """
+    if not transactions:
+        return aurohash_256(b"")
+
+    layer = [aurohash_256(str(tx).encode("utf-8")) for tx in transactions]
+
+    while len(layer) > 1:
+        if len(layer) % 2 == 1:
+            layer.append(layer[-1])
+
+        next_layer = []
+        for i in range(0, len(layer), 2):
+            combined = (layer[i] + layer[i + 1]).encode("utf-8")
+            next_layer.append(aurohash_256(combined))
+        layer = next_layer
+
+    return layer[0]
+
+
+def main():
+    # quick local test (OPTIONAL)
+    print("hash('hello') =", aurohash_256(b"hello"))
+    print("merkle(['a','b']) =", merkle_root(["a", "b"]))
+
+
+if __name__ == "__main__":
+    main()
