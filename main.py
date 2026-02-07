@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, List, Tuple
 import time
+import argparse
 
 """
 //Input
@@ -25,7 +26,7 @@ Algo:
   - custom hash
   - merkle root
   - dynamic PoW (difficulty_bits + window_mod)
-  - chain validation (next commit)
+  - chain validation (immutability proof)
 """
 
 # //what do we do with the data:
@@ -33,7 +34,7 @@ Algo:
 Flow:
   1) add_transaction(tx)
   2) mine_block(): build metadata -> run PoW -> append block
-  3) is_valid(): verify links + hashes + PoW (next commit)
+  3) is_valid(): verify links + hashes + PoW
 """
 
 # //Output
@@ -141,7 +142,7 @@ def merkle_root(transactions: List[Any]) -> str:
 
 
 # ============================================================
-# Blockchain (NOW with real PoW mining)
+# Blockchain (PoW + Validation)
 # ============================================================
 
 class Blockchain:
@@ -158,7 +159,7 @@ class Blockchain:
         self.chain: List[Block] = []
         self.mempool: List[Any] = []
 
-        # Genesis block is mined too
+        # Genesis is mined too
         self._create_genesis()
 
     def add_transaction(self, tx: Any) -> None:
@@ -176,11 +177,9 @@ class Blockchain:
         seed = int(prev_hash[:8], 16) if prev_hash and prev_hash != ("0" * 64) else 0
 
         if self.easy_mode:
-            # FAST demo range
             difficulty_bits = 10 + ((height + tx_count + (seed & 0xF)) % 5)  # 10..14
             window_mod = 2 + ((height + ((seed >> 4) & 0xFF)) % 5)          # 2..6
         else:
-            # slower, more difficult
             difficulty_bits = 16 + ((height + tx_count + (seed & 0xF)) % 7)  # 16..22
             window_mod = 3 + ((height + ((seed >> 4) & 0xFF)) % 9)           # 3..11
 
@@ -269,6 +268,45 @@ class Blockchain:
         self.chain.append(block)
         return block
 
+    # ----------------------------
+    # NEW: Validation (immutability proof)
+    # ----------------------------
+
+    def is_valid(self) -> bool:
+        """
+        Validates:
+          - prev_hash linkage
+          - merkle root integrity
+          - metadata_hash integrity
+          - auth_tag integrity
+          - PoW integrity (block_hash recomputation + difficulty check)
+        """
+        for i, b in enumerate(self.chain):
+            expected_prev = ("0" * 64) if i == 0 else self.chain[i - 1].block_hash
+            if b.prev_hash != expected_prev:
+                return False
+
+            if b.merkle != merkle_root(b.transactions):
+                return False
+
+            recomputed_meta = self._metadata_hash(
+                b.height, b.timestamp, b.prev_hash, b.merkle, b.difficulty_bits, b.window_mod
+            )
+            if b.metadata_hash != recomputed_meta:
+                return False
+
+            if b.auth_tag != self._auth_tag(b.metadata_hash):
+                return False
+
+            recomputed_pow = self._pow_hash(b.metadata_hash, b.nonce, b.window_mod)
+            if b.block_hash != recomputed_pow:
+                return False
+
+            if not self._meets_difficulty(b.block_hash, b.difficulty_bits):
+                return False
+
+        return True
+
     def print_chain(self) -> None:
         for b in self.chain:
             print("\n==================== BLOCK ====================")
@@ -287,6 +325,10 @@ class Blockchain:
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--demo-tamper", action="store_true", help="tamper with a block to prove immutability")
+    args = parser.parse_args()
+
     bc = Blockchain(easy_mode=True)
 
     bc.add_transaction({"from": "A", "to": "B", "amount": 10})
@@ -298,6 +340,14 @@ def main():
     bc.mine_block()
 
     bc.print_chain()
+    print("\nChain valid?", bc.is_valid())
+
+    if args.demo_tamper:
+        print("\n--- TAMPER DEMO ---")
+        # Modify block 1 (not genesis) after it was mined
+        bc.chain[1].transactions[0] = {"from": "A", "to": "B", "amount": 999999}
+        print("Tampered with block 1 transactions.")
+        print("Chain valid after tamper?", bc.is_valid())
 
 
 if __name__ == "__main__":
