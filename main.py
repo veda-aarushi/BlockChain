@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-from typing import Any, List
+from typing import Any, List, Tuple
 import time
+
 """
 //Input
 We are given:
@@ -23,8 +24,8 @@ DS:
 Algo:
   - custom hash
   - merkle root
-  - dynamic PoW
-  - chain validation
+  - dynamic PoW (difficulty_bits + window_mod)
+  - chain validation (next commit)
 """
 
 # //what do we do with the data:
@@ -32,7 +33,7 @@ Algo:
 Flow:
   1) add_transaction(tx)
   2) mine_block(): build metadata -> run PoW -> append block
-  3) is_valid(): verify links + hashes + PoW
+  3) is_valid(): verify links + hashes + PoW (next commit)
 """
 
 # //Output
@@ -44,7 +45,7 @@ We print chain valid? True/False
 
 
 # ============================================================
-# Commit #2: Block Data Structure
+# Block Data Structure
 # ============================================================
 
 @dataclass
@@ -54,33 +55,28 @@ class Block:
     prev_hash: str
     transactions: List[Any]
 
+    # attack-resilient metadata
     merkle: str
-    difficulty_bits: int
-    window_mod: int
+    difficulty_bits: int    # dynamic parameter #1
+    window_mod: int         # dynamic parameter #2
     metadata_hash: str
     auth_tag: str
 
+    # PoW fields
     nonce: int
     block_hash: str
 
 
 # ============================================================
-# Commit #3: Custom Hash (AuroHash-256) — NOT SHA-256
+# Custom Hash (AuroHash-256) — NOT SHA-256
 # ============================================================
 
 def _rotl32(x: int, r: int) -> int:
-    """Rotate-left a 32-bit integer."""
     x &= 0xFFFFFFFF
     return ((x << r) | (x >> (32 - r))) & 0xFFFFFFFF
 
 
 def aurohash_256(data: bytes) -> str:
-    """
-    Custom 256-bit hash function for coursework.
-    - Input: bytes
-    - Output: 64 hex chars (256 bits)
-    NOTE: Not a standard crypto hash; used to satisfy 'no SHA-256' constraint.
-    """
     s = [
         0x243F6A88, 0x85A308D3, 0x13198A2E, 0x03707344,
         0xA4093822, 0x299F31D0, 0x082EFA98, 0xEC4E6C89
@@ -122,14 +118,10 @@ def aurohash_256(data: bytes) -> str:
 
 
 # ============================================================
-# Commit #4: Merkle Root for Transaction Integrity
+# Merkle Root (Transaction Integrity)
 # ============================================================
 
 def merkle_root(transactions: List[Any]) -> str:
-    """
-    Builds a Merkle root for the transactions.
-    Any transaction change -> different leaf hash -> different merkle root.
-    """
     if not transactions:
         return aurohash_256(b"")
 
@@ -147,65 +139,135 @@ def merkle_root(transactions: List[Any]) -> str:
 
     return layer[0]
 
+
 # ============================================================
-# Commit #5: Blockchain class (mempool + chain + genesis)
+# Blockchain (NOW with real PoW mining)
 # ============================================================
 
 class Blockchain:
-    def __init__(self, chain_id: str = "LOCAL-CHAIN-1"):
-        # DS: list for chain and mempool
+    def __init__(
+        self,
+        chain_id: str = "LOCAL-CHAIN-1",
+        secret_key: str = "class-demo-key",
+        easy_mode: bool = True
+    ):
         self.chain_id = chain_id
+        self.secret_key = secret_key
+        self.easy_mode = easy_mode
+
         self.chain: List[Block] = []
         self.mempool: List[Any] = []
 
-        # Create genesis immediately
+        # Genesis block is mined too
         self._create_genesis()
 
     def add_transaction(self, tx: Any) -> None:
-        """
-        Store a transaction in the mempool (temporary holding area)
-        """
         self.mempool.append(tx)
 
     def _create_genesis(self) -> None:
-        """
-        Genesis block:
-          - no PoW yet (later commit)
-          - still has a merkle root + deterministic placeholder hashes
-        """
         self.mempool.append({"GENESIS": True})
+        self.mine_block()
 
-        height = 0
+    # ----------------------------
+    # TWO dynamic parameters for PoW
+    # ----------------------------
+
+    def _dynamic_params(self, height: int, prev_hash: str, tx_count: int) -> Tuple[int, int]:
+        seed = int(prev_hash[:8], 16) if prev_hash and prev_hash != ("0" * 64) else 0
+
+        if self.easy_mode:
+            # FAST demo range
+            difficulty_bits = 10 + ((height + tx_count + (seed & 0xF)) % 5)  # 10..14
+            window_mod = 2 + ((height + ((seed >> 4) & 0xFF)) % 5)          # 2..6
+        else:
+            # slower, more difficult
+            difficulty_bits = 16 + ((height + tx_count + (seed & 0xF)) % 7)  # 16..22
+            window_mod = 3 + ((height + ((seed >> 4) & 0xFF)) % 9)           # 3..11
+
+        return difficulty_bits, window_mod
+
+    # ----------------------------
+    # metadata commitments
+    # ----------------------------
+
+    def _metadata_hash(
+        self,
+        height: int,
+        ts: float,
+        prev_hash: str,
+        merkle: str,
+        difficulty_bits: int,
+        window_mod: int
+    ) -> str:
+        meta = f"{self.chain_id}|{height}|{ts}|{prev_hash}|{merkle}|{difficulty_bits}|{window_mod}"
+        return aurohash_256(meta.encode("utf-8"))
+
+    def _auth_tag(self, metadata_hash: str) -> str:
+        msg = (self.secret_key + "|" + metadata_hash).encode("utf-8")
+        return aurohash_256(msg)
+
+    # ----------------------------
+    # Proof-of-Work core
+    # ----------------------------
+
+    def _pow_hash(self, metadata_hash: str, nonce: int, window_mod: int) -> str:
+        salt = f"{window_mod}:{(nonce % (window_mod * 997 + 1))}".encode("utf-8")
+        payload = metadata_hash.encode("utf-8") + b"|" + str(nonce).encode("utf-8") + b"|" + salt
+        return aurohash_256(payload)
+
+    def _meets_difficulty(self, h: str, difficulty_bits: int) -> bool:
+        value = int(h, 16)
+        return (value >> (256 - difficulty_bits)) == 0
+
+    # ----------------------------
+    # Mining a block
+    # ----------------------------
+
+    def mine_block(self, max_nonce: int = 500_000, report_every: int = 50_000) -> Block:
+        height = len(self.chain)
         ts = time.time()
-        prev_hash = "0" * 64
+        prev = self.chain[-1].block_hash if self.chain else "0" * 64
         txs = self.mempool[:]
         self.mempool.clear()
 
         mk = merkle_root(txs)
+        difficulty_bits, window_mod = self._dynamic_params(height, prev, len(txs))
+        meta_h = self._metadata_hash(height, ts, prev, mk, difficulty_bits, window_mod)
+        tag = self._auth_tag(meta_h)
 
-        # placeholder metadata + auth_tag + block_hash (PoW later)
-        difficulty_bits = 0
-        window_mod = 0
-        metadata_hash = aurohash_256(f"{self.chain_id}|{height}|{ts}|{prev_hash}|{mk}".encode("utf-8"))
-        auth_tag = aurohash_256(f"AUTH|{metadata_hash}".encode("utf-8"))
         nonce = 0
-        block_hash = aurohash_256(f"BLOCK|{metadata_hash}|{nonce}".encode("utf-8"))
+        while True:
+            bh = self._pow_hash(meta_h, nonce, window_mod)
 
-        genesis = Block(
+            if self._meets_difficulty(bh, difficulty_bits):
+                break
+
+            nonce += 1
+
+            if report_every and nonce % report_every == 0:
+                print(f"[mining] height={height} nonce={nonce} diff={difficulty_bits} window={window_mod}")
+
+            if nonce >= max_nonce:
+                raise RuntimeError(
+                    f"Mining exceeded max_nonce={max_nonce}. Lower difficulty or keep easy_mode=True."
+                )
+
+        block = Block(
             height=height,
             timestamp=ts,
-            prev_hash=prev_hash,
+            prev_hash=prev,
             transactions=txs,
             merkle=mk,
             difficulty_bits=difficulty_bits,
             window_mod=window_mod,
-            metadata_hash=metadata_hash,
-            auth_tag=auth_tag,
+            metadata_hash=meta_h,
+            auth_tag=tag,
             nonce=nonce,
-            block_hash=block_hash
+            block_hash=bh
         )
 
-        self.chain.append(genesis)
+        self.chain.append(block)
+        return block
 
     def print_chain(self) -> None:
         for b in self.chain:
@@ -223,15 +285,17 @@ class Blockchain:
             print(f"Nonce:           {b.nonce}")
             print(f"Block Hash:      {b.block_hash}")
 
+
 def main():
-    # Demo: just show genesis and mempool behavior (mining comes next commit)
-    bc = Blockchain()
+    bc = Blockchain(easy_mode=True)
 
     bc.add_transaction({"from": "A", "to": "B", "amount": 10})
     bc.add_transaction({"from": "B", "to": "C", "amount": 5})
+    bc.mine_block()
 
-    print("Mempool currently has:", bc.mempool)
-    print("Chain currently has:", len(bc.chain), "block(s)")
+    bc.add_transaction("UserLoginEvent: alice@10.0.0.5")
+    bc.add_transaction("FileUploadEvent: report.pdf")
+    bc.mine_block()
 
     bc.print_chain()
 
