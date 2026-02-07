@@ -45,3 +45,21 @@ def main():
 
 if __name__ == "__main__":
     main()
+from dataclasses import dataclass
+from typing import Any, List
+
+@dataclass
+class Block:
+    height: int
+    timestamp: float
+    prev_hash: str
+    transactions: List[Any]
+
+    merkle: str
+    difficulty_bits: int
+    window_mod: int
+    metadata_hash: str
+    auth_tag: str
+
+    nonce: int
+    block_hash: str
