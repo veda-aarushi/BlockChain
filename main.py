@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, List
-
+import time
 """
 //Input
 We are given:
@@ -147,11 +147,93 @@ def merkle_root(transactions: List[Any]) -> str:
 
     return layer[0]
 
+# ============================================================
+# Commit #5: Blockchain class (mempool + chain + genesis)
+# ============================================================
+
+class Blockchain:
+    def __init__(self, chain_id: str = "LOCAL-CHAIN-1"):
+        # DS: list for chain and mempool
+        self.chain_id = chain_id
+        self.chain: List[Block] = []
+        self.mempool: List[Any] = []
+
+        # Create genesis immediately
+        self._create_genesis()
+
+    def add_transaction(self, tx: Any) -> None:
+        """
+        Store a transaction in the mempool (temporary holding area)
+        """
+        self.mempool.append(tx)
+
+    def _create_genesis(self) -> None:
+        """
+        Genesis block:
+          - no PoW yet (later commit)
+          - still has a merkle root + deterministic placeholder hashes
+        """
+        self.mempool.append({"GENESIS": True})
+
+        height = 0
+        ts = time.time()
+        prev_hash = "0" * 64
+        txs = self.mempool[:]
+        self.mempool.clear()
+
+        mk = merkle_root(txs)
+
+        # placeholder metadata + auth_tag + block_hash (PoW later)
+        difficulty_bits = 0
+        window_mod = 0
+        metadata_hash = aurohash_256(f"{self.chain_id}|{height}|{ts}|{prev_hash}|{mk}".encode("utf-8"))
+        auth_tag = aurohash_256(f"AUTH|{metadata_hash}".encode("utf-8"))
+        nonce = 0
+        block_hash = aurohash_256(f"BLOCK|{metadata_hash}|{nonce}".encode("utf-8"))
+
+        genesis = Block(
+            height=height,
+            timestamp=ts,
+            prev_hash=prev_hash,
+            transactions=txs,
+            merkle=mk,
+            difficulty_bits=difficulty_bits,
+            window_mod=window_mod,
+            metadata_hash=metadata_hash,
+            auth_tag=auth_tag,
+            nonce=nonce,
+            block_hash=block_hash
+        )
+
+        self.chain.append(genesis)
+
+    def print_chain(self) -> None:
+        for b in self.chain:
+            print("\n==================== BLOCK ====================")
+            print(f"Height:          {b.height}")
+            print(f"Timestamp:       {b.timestamp}")
+            print(f"Prev Hash:       {b.prev_hash}")
+            print(f"Tx Count:        {len(b.transactions)}")
+            print(f"Transactions:    {b.transactions}")
+            print(f"Merkle Root:     {b.merkle}")
+            print(f"DifficultyBits:  {b.difficulty_bits}")
+            print(f"WindowMod:       {b.window_mod}")
+            print(f"Metadata Hash:   {b.metadata_hash}")
+            print(f"Auth Tag:        {b.auth_tag}")
+            print(f"Nonce:           {b.nonce}")
+            print(f"Block Hash:      {b.block_hash}")
 
 def main():
-    # quick local test (OPTIONAL)
-    print("hash('hello') =", aurohash_256(b"hello"))
-    print("merkle(['a','b']) =", merkle_root(["a", "b"]))
+    # Demo: just show genesis and mempool behavior (mining comes next commit)
+    bc = Blockchain()
+
+    bc.add_transaction({"from": "A", "to": "B", "amount": 10})
+    bc.add_transaction({"from": "B", "to": "C", "amount": 5})
+
+    print("Mempool currently has:", bc.mempool)
+    print("Chain currently has:", len(bc.chain), "block(s)")
+
+    bc.print_chain()
 
 
 if __name__ == "__main__":
